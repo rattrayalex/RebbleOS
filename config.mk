@@ -93,6 +93,7 @@ SRCS_all += rcore/bluetooth.c
 SRCS_all += rcore/ppogatt.c
 SRCS_all += rcore/buttons.c
 SRCS_all += rcore/keyboard.c
+SRCS_all += rcore/keyboard_map.c
 SRCS_all += rcore/display.c
 SRCS_all += rcore/debug.c
 SRCS_all += rcore/gyro.c
