@@ -55,6 +55,11 @@ static ButtonMessage _button_message;
 static ButtonHolder _button_holders[NUM_BUTTONS] MEM_REGION_DISPLAY;
 /* One bit per ButtonId, set and cleared by button_inject_state(). */
 static uint8_t _virtual_pressed;
+/* Software presses the button thread has not delivered yet.  A press and
+ * its release can arrive before the thread runs (it has a lower priority
+ * than the threads that inject); the latch keeps the button down until the
+ * thread has seen the press edge, so the click is not lost. */
+static uint8_t _virtual_latched;
 
 void button_send_app_click(ButtonHolder *button, enum button_owners owner, void *callback, void *recognizer, void *context);
 
@@ -99,11 +104,19 @@ static void _button_isr(hw_button_t /* which is definitionally the same as a But
 }
 
 /*
- * A button is down when the hardware says so or when software holds it.
+ * A button is down when the hardware says so, when software holds it, or
+ * when a software press is still waiting to be seen.
  */
 static uint8_t _button_pressed(ButtonId button_id)
 {
-    return hw_button_pressed(button_id) || (_virtual_pressed & (1 << button_id));
+    return hw_button_pressed(button_id) || ((_virtual_pressed | _virtual_latched) & (1 << button_id));
+}
+
+static void _virtual_latch_clear(ButtonId button_id)
+{
+    taskENTER_CRITICAL();
+    _virtual_latched &= ~(1 << button_id);
+    taskEXIT_CRITICAL();
 }
 
 /*
@@ -149,16 +162,31 @@ static void _button_thread(void *pvParameters)
                     break;
                 }
             }
-            if (owner == OWNER_MAX) /* No owner. */
+            if (owner == OWNER_MAX) { /* No owner. */
+                _virtual_latch_clear(btni); /* nobody to deliver a software press to */
                 continue;
+            }
             ClickConfig *cfg = &(btn->click_config[owner]);
             
             /* Has something changed? */
-            if ((btn->pressed != _button_pressed(btni)) &&
-                (xTaskGetTickCount() > (btn->last_transition + butDEBOUNCE_DELAY)))
+            uint8_t now_pressed = _button_pressed(btni);
+            if (btn->pressed != now_pressed &&
+                xTaskGetTickCount() <= (btn->last_transition + butDEBOUNCE_DELAY))
             {
-                btn->pressed = _button_pressed(btni);
+                /* A change inside the debounce window.  Look again when the
+                 * window ends; otherwise a physical edge that bounced, or a
+                 * software press and its release, is not seen until the
+                 * next interrupt. */
+                TickType_t again = btn->last_transition + butDEBOUNCE_DELAY + 1;
+                if (again < next_wakeup)
+                    next_wakeup = again;
+            }
+            else if (btn->pressed != now_pressed)
+            {
+                btn->pressed = now_pressed;
                 btn->last_transition = xTaskGetTickCount();
+                if (now_pressed)
+                    _virtual_latch_clear(btni); /* the software press has been seen */
                 
                 /* We know there was an edge here -- which was it? */
                 if (btn->pressed /* released -> pressed */) {
@@ -370,10 +398,12 @@ void button_inject_state(ButtonId button_id, bool pressed)
         return;
 
     taskENTER_CRITICAL();
-    if (pressed)
+    if (pressed) {
         _virtual_pressed |= (1 << button_id);
-    else
+        _virtual_latched |= (1 << button_id);
+    } else {
         _virtual_pressed &= ~(1 << button_id);
+    }
     taskEXIT_CRITICAL();
 
     if (THREAD_HANDLE(button))
