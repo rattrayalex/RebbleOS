@@ -15,3 +15,6 @@
 void nrf52_ppogatt_bond_complete();
 void nrf52_ppogatt_discovery(ble_db_discovery_evt_t *evt);
 void nrf52_ppogatt_init();
+
+/* nrf52_bluetooth_hid.c: BLE HID (HOGP) keyboard host on a central link */
+void nrf52_hid_init(void);

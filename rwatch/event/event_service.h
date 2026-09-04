@@ -17,6 +17,7 @@ typedef enum EventServiceCommand {
     EventServiceCommandAlert,
     EventServiceCommandProgress,
     EventServiceCommandBluetoothPairRequest,
+    EventServiceCommandKeyboard,
 } EventServiceCommand;
 
 

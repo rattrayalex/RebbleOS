@@ -36,3 +36,11 @@ void button_set_click_context(ButtonId button_id, void *context);
  * Check if a button is subscribed to any short click click handlers
  */
 uint8_t button_short_click_is_subscribed(ButtonId button_id);
+
+/**
+ * Press or release a button from software, for instance from an external
+ * keyboard.  The button thread treats the synthetic state exactly like the
+ * physical button: debounce, long-click, repeat, and overlay/app ownership
+ * all apply.  Thread context only, not from an ISR.
+ */
+void button_inject_state(ButtonId button_id, bool pressed);
