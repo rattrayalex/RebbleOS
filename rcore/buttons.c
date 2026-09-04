@@ -53,6 +53,8 @@ THREAD_DEFINE(button, configMINIMAL_STACK_SIZE, tskIDLE_PRIORITY + 5UL, _button_
 
 static ButtonMessage _button_message;
 static ButtonHolder _button_holders[NUM_BUTTONS] MEM_REGION_DISPLAY;
+/* One bit per ButtonId, set and cleared by button_inject_state(). */
+static uint8_t _virtual_pressed;
 
 void button_send_app_click(ButtonHolder *button, enum button_owners owner, void *callback, void *recognizer, void *context);
 
@@ -94,6 +96,14 @@ static void _button_isr(hw_button_t /* which is definitionally the same as a But
     priority task.  The macro used for this purpose is dependent on the port in
     use and may be called portEND_SWITCHING_ISR(). */
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+/*
+ * A button is down when the hardware says so or when software holds it.
+ */
+static uint8_t _button_pressed(ButtonId button_id)
+{
+    return hw_button_pressed(button_id) || (_virtual_pressed & (1 << button_id));
 }
 
 /*
@@ -144,10 +154,10 @@ static void _button_thread(void *pvParameters)
             ClickConfig *cfg = &(btn->click_config[owner]);
             
             /* Has something changed? */
-            if ((btn->pressed != hw_button_pressed(btni)) && 
+            if ((btn->pressed != _button_pressed(btni)) &&
                 (xTaskGetTickCount() > (btn->last_transition + butDEBOUNCE_DELAY)))
             {
-                btn->pressed = hw_button_pressed(btni);
+                btn->pressed = _button_pressed(btni);
                 btn->last_transition = xTaskGetTickCount();
                 
                 /* We know there was an edge here -- which was it? */
@@ -345,6 +355,29 @@ uint8_t button_short_click_is_subscribed(ButtonId button_id)
     ButtonHolder *holder = &_button_holders[button_id];
     
     return holder->click_config[OWNER_APP].click.handler != NULL;
+}
+
+/*
+ * Press or release a button from software, for instance from an external
+ * keyboard.  Only the virtual state changes here; the button thread wakes
+ * and re-polls every button, so debounce, long-click, repeat and
+ * overlay/app owner arbitration apply to a synthetic press exactly as to a
+ * physical one.  Task context only, never from an ISR.
+ */
+void button_inject_state(ButtonId button_id, bool pressed)
+{
+    if (button_id >= NUM_BUTTONS)
+        return;
+
+    taskENTER_CRITICAL();
+    if (pressed)
+        _virtual_pressed |= (1 << button_id);
+    else
+        _virtual_pressed &= ~(1 << button_id);
+    taskEXIT_CRITICAL();
+
+    if (THREAD_HANDLE(button))
+        xTaskNotifyGive(THREAD_HANDLE(button));
 }
 
 bool click_recognizer_is_repeating(ClickRecognizerRef recognizer)
