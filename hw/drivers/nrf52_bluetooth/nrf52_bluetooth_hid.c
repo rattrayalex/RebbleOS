@@ -37,6 +37,7 @@
 #include "nrf_sdh_ble.h"
 #include "ble_gap.h"
 #include "ble_gattc.h"
+#include "ble_gatts.h"
 #include "ble_hci.h"
 #include "ble_advdata.h"
 #include "ble_srv_common.h"
@@ -1433,6 +1434,14 @@ static void _hid_handler(const ble_evt_t *evt, void *context) {
             HID_LOG(APP_LOG_LEVEL_WARNING, "sd_ble_gap_phy_update failed (%d)", rv);
         break;
     }
+    case BLE_GATTS_EVT_SYS_ATTR_MISSING:
+        /* The keyboard may also act as a GATT client of our server.  S140
+         * raises this once per connection before serving such a request;
+         * nrf52_bluetooth.c answers it for the phone link only. */
+        rv = sd_ble_gatts_sys_attr_set(_hid_conn, NULL, 0, 0);
+        if (rv != NRF_SUCCESS)
+            HID_LOG(APP_LOG_LEVEL_WARNING, "sd_ble_gatts_sys_attr_set failed (%d)", rv);
+        break;
     case BLE_GAP_EVT_PHY_UPDATE:
     case BLE_GAP_EVT_DATA_LENGTH_UPDATE_REQUEST:  /* answered by nrf_ble_gatt for every link */
     case BLE_GAP_EVT_DATA_LENGTH_UPDATE:
