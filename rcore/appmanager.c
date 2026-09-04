@@ -17,6 +17,7 @@
 #include "api_func_symbols.h"
 #include "qalloc.h"
 #include "notification_manager.h"
+#include "keyboard_service.h"
 
 /* Configure Logging */
 #define MODULE_NAME "appman"
@@ -447,6 +448,7 @@ static void _app_management_thread(void *parms)
                     /* remove the ticktimer service handler and stop it */
                     tick_timer_service_unsubscribe_thread(_this_thread);
                     connection_service_unsubscribe_thread(_this_thread);
+                    keyboard_service_unsubscribe_thread(_this_thread);
                     event_service_unsubscribe_thread_all(_this_thread);
                     
                     appmanager_app_quit();
