@@ -135,6 +135,13 @@ void nrf52_ppogatt_bond_complete() {
 static void _ppogatt_handler(const ble_evt_t *evt, void *context) {
     ret_code_t rv;
 
+    /* Only a peripheral-role connection is the phone; central links belong to the keyboard host (nrf52_bluetooth_hid.c). */
+    if (evt->header.evt_id == BLE_GAP_EVT_CONNECTED && evt->evt.gap_evt.params.connected.role != BLE_GAP_ROLE_PERIPH)
+        return;
+    /* Every other event must be for the phone link, so the keyboard's disconnect never fires the PPoGATT callbacks. */
+    if (evt->header.evt_id != BLE_GAP_EVT_CONNECTED && (_bt_conn == BLE_CONN_HANDLE_INVALID || evt->evt.common_evt.conn_handle != _bt_conn))
+        return;
+
     switch (evt->header.evt_id) {
     case BLE_GAP_EVT_CONNECTED:
         ppogatt_srv_notify_cccd = 0;

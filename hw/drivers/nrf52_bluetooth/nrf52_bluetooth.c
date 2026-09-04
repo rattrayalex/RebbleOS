@@ -30,11 +30,9 @@
  *   0x1628 bytes of RAM, plus sd_ble_enable-required memory
  */
 
-#define CONN_TAG 1
-
 NRF_BLE_GATT_DEF(_gatt);
 BLE_DB_DISCOVERY_DEF(_disc);
-NRF_BLE_GQ_DEF(_gatt_queue, NRF_SDH_BLE_PERIPHERAL_LINK_COUNT, NRF_BLE_GQ_QUEUE_SIZE);
+NRF_BLE_GQ_DEF(_gatt_queue, NRF_SDH_BLE_TOTAL_LINK_COUNT, NRF_BLE_GQ_QUEUE_SIZE);
 
 int sfmt(char *buf, unsigned int len, const char *ifmt, ...);
 static uint8_t _name_buf[] = "Pebble Asterix LE xxxx";
@@ -57,11 +55,24 @@ uint8_t hw_bluetooth_init() {
     uint32_t ram_start = 0;
     rv = nrf_sdh_ble_default_cfg_set(CONN_TAG, &ram_start);
     assert(rv == NRF_SUCCESS && "nrf_sdh_ble_default_cfg_set");
-    if (ram_start > rebbleos_ram_start) {
-        panic("BLE subsystem requires too much RAM");
+
+    /* nrf_sdh_ble_default_cfg_set() only hands back the linker's RAM start
+     * (its APP_RAM_START is &__data_start__), so comparing here proves
+     * nothing.  The SoftDevice's real demand comes from sd_ble_enable(),
+     * which nrf_sdh_ble_enable() calls with the pointer we give it: on
+     * return the variable holds the minimum application RAM start for
+     * this configuration, and NRF_ERROR_NO_MEM means the linked start
+     * (nrf52840.lds, RAM ORIGIN) is below it. */
+    ram_start = rebbleos_ram_start;
+    rv = nrf_sdh_ble_enable(&ram_start);
+    DRV_LOG("bt", APP_LOG_LEVEL_INFO, "SoftDevice needs app RAM from 0x%08x; linked at 0x%08x (%d bytes spare)",
+            ram_start, rebbleos_ram_start, (int)(rebbleos_ram_start - ram_start));
+    if (rv == NRF_ERROR_NO_MEM || ram_start > rebbleos_ram_start) {
+        static char panic_msg[96];
+        sfmt(panic_msg, sizeof(panic_msg), "BLE subsystem requires too much RAM: needs 0x%08x, linked 0x%08x",
+             ram_start, rebbleos_ram_start);
+        panic(panic_msg);
     }
-    
-    rv = nrf_sdh_ble_enable(&rebbleos_ram_start);
     assert(rv == NRF_SUCCESS && "nrf_sdh_ble_enable");
     
     /* Set up device name. 
@@ -96,7 +107,7 @@ uint8_t hw_bluetooth_init() {
     
     /* Set up PPoGATT. */
     nrf52_ppogatt_init();
-    
+
     /* Set up advertising data. */
     _advertising_init();
 
@@ -285,7 +296,14 @@ static void _pairing_handler(const ble_evt_t *evt, void *context) {
     ret_code_t rv;
     
     _enqueue_remote_name_request();
-    
+
+    /* Only a peripheral-role connection is the phone; central links belong to the keyboard host (nrf52_bluetooth_hid.c). */
+    if (evt->header.evt_id == BLE_GAP_EVT_CONNECTED && evt->evt.gap_evt.params.connected.role != BLE_GAP_ROLE_PERIPH)
+        return;
+    /* Every other event must be for the phone link: keyboard-link events, and connection-less ones (ADV_REPORT, scan TIMEOUT), stay out of the sys-attr / MTU / "unknown event" paths. */
+    if (evt->header.evt_id != BLE_GAP_EVT_CONNECTED && (_bt_conn == BLE_CONN_HANDLE_INVALID || evt->evt.common_evt.conn_handle != _bt_conn))
+        return;
+
     switch (evt->header.evt_id) {
     case BLE_GAP_EVT_CONNECTED:
         DRV_LOG("bt", APP_LOG_LEVEL_INFO, "remote endpoint connected, bonded status %d", _bt_conn_is_bonded);

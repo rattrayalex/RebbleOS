@@ -6,7 +6,12 @@ GROUP(-lgcc -lc -lnosys)
 MEMORY
 {
   FLASH (rx) : ORIGIN = 0x27000, LENGTH = 0xd9000
-  RAM (rwx) :  ORIGIN = 0x20002300, LENGTH = 0x3dd00
+  /* The S140 SoftDevice owns 0x20000000 up to ORIGIN; one central plus one
+   * peripheral link at the default MTU needs the application RAM to start
+   * at 0x200028d8 (SDK 16 ble_app_hrs_rscs_relay), so 0x20003000 leaves
+   * margin.  hw_bluetooth_init() panics with the SoftDevice's real demand
+   * if this ever becomes too small. */
+  RAM (rwx) :  ORIGIN = 0x20003000, LENGTH = 0x3d000
 }
 
 SECTIONS
