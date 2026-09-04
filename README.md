@@ -24,6 +24,7 @@ The firmware is based on FreeRTOS, and aims to be binary-compatible with applica
 |Backlight:       |Y                |Y                       |Y            |N              |N      |N        |
 |Power Management:|N                |N                       |N            |N              |N      |N        |
 |Bluetooth:       |N                |Y (Alpha)               |N            |N              |WIP    |WIP      |
+|Keyboard (BLE HID host):|n/a       |n/a                     |n/a          |n/a            |WIP (compile-tested)|WIP (compile-tested)|
 |Overall (%):     |5%               |20%                     |10%          |0%             |15%    |15%      |
 
 ## FAQ
@@ -44,6 +45,10 @@ A. Basic hardware and some apps will work ok. Bluetooth is coming along slowly. 
 **Q: Can I run it on hardware?**
 
 A. Snowy, yes. But it's experimental and whatnot. Be careful. We are not liable for eaten dogs.
+
+**Q: Can I use a Bluetooth keyboard?**
+
+A. Work in progress on the nRF52840 boards (Asterix, Vla-52840); see [docs/bluetooth_keyboard.md](docs/bluetooth_keyboard.md).
 
 **Q: Where is the FPGA. It complains when I build.**
 
