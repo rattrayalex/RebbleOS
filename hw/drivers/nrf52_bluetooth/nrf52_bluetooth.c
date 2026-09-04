@@ -108,6 +108,9 @@ uint8_t hw_bluetooth_init() {
     /* Set up PPoGATT. */
     nrf52_ppogatt_init();
 
+    /* Set up the HID keyboard host (central link). */
+    nrf52_hid_init();
+
     /* Set up advertising data. */
     _advertising_init();
 
