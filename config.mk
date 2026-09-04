@@ -179,6 +179,7 @@ SRCS_all += Apps/System/menu.c
 SRCS_all += Apps/System/testapp.c
 SRCS_all += Apps/System/settings.c
 SRCS_all += Apps/System/settings_tz.c
+SRCS_all += Apps/System/settings_keyboard.c
 SRCS_all += Apps/System/watchface.c
 
 SRCS_all += Apps/System/widgettest.c

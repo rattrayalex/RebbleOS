@@ -11,6 +11,11 @@
 #include "action_bar_layer.h"
 #include "platform_res.h"
 
+/* settings_keyboard.c */
+void settings_keyboard_invoke(void);
+void settings_keyboard_init(void);
+void settings_keyboard_deinit(void);
+
 static int _in_pairing = 0;
 static Window *_bt_pair_window;
 static Layer *_bt_pair_layer;
@@ -116,6 +121,11 @@ static struct MenuItems *_sel_tz_dir(const struct MenuItem *ctx) {
     return NULL;
 }
 
+static struct MenuItems *_sel_keyboard(const struct MenuItem *ctx) {
+    settings_keyboard_invoke();
+    return NULL;
+}
+
 static struct MenuItems *_swap_24h_time(const struct MenuItem *ctx) {
     rcore_set_is_24h_style(!pbl_clock_is_24h_style());
     strcpy(_use_24h_str, pbl_clock_is_24h_style() ? "24-hour" : "12-hour");
@@ -146,9 +156,10 @@ static void _reset_menu_items(void)
     MenuItems *back = _menu->items->back;
     MenuIndex *index = &_menu->items->back_index;
 
-    MenuItems *items = menu_items_create(4);
+    MenuItems *items = menu_items_create(6);
     
     menu_items_add(items, MenuItem("Discoverable", bluetooth_name(), RESOURCE_ID_SPANNER, NULL));
+    menu_items_add(items, MenuItem("Keyboard", "BLE keyboard", RESOURCE_ID_SPANNER, _sel_keyboard));
     menu_items_add(items, MenuItem("Date & Time", "Later is fine", RESOURCE_ID_CLOCK, _time_settings));
     menu_items_add(items, MenuItem("Format filesystem", "Time to die!", RESOURCE_ID_SPANNER, _wipe_fs));
     menu_items_add(items, MenuItem("Dummy BT pair", "Be a dummy", RESOURCE_ID_SPANNER, _dummy_bt));
@@ -212,6 +223,7 @@ void settings_init(void)
     });
     
     settings_tz_init();
+    settings_keyboard_init();
 }
 
 void settings_deinit(void)
@@ -219,4 +231,5 @@ void settings_deinit(void)
     window_destroy(_main_window);
     window_destroy(_bt_pair_window);
     settings_tz_deinit();
+    settings_keyboard_deinit();
 }
