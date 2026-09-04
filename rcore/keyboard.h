@@ -62,8 +62,8 @@ void keyboard_init(void);
 
 /* Driver -> core.  Deliver one HID boot-protocol keyboard input report
  * (byte 0 modifiers, byte 1 reserved, bytes 2..7 usage IDs of the keys
- * currently held).  Thread context only, never from an ISR.  Reports longer
- * than 8 bytes are truncated; shorter ones are ignored. */
+ * currently held).  Thread context only, never from an ISR.  Reports whose
+ * length is not 8 bytes are ignored. */
 void keyboard_hid_boot_report(const uint8_t *report, size_t len);
 
 /* Driver -> core.  Thread context only.  `name` may be NULL when unknown. */
