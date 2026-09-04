@@ -19,6 +19,7 @@
 #include "rtoswrap.h"
 #include "test.h"
 #include "service.h"
+#include "keyboard.h"
 
 typedef uint8_t (*mod_callback)(void);
 // static TaskHandle_t _os_task;
@@ -70,6 +71,7 @@ static void _os_thread(void *pvParameters)
     _module_init(vibrate_init,          "Vibro");
     _module_init(display_init,          "Display");
     _module_init(rcore_buttons_init,    "Buttons");
+    keyboard_init();
     rtc_init();
     rcore_time_init();
     //rcore_ambient_init("Ambiance");
