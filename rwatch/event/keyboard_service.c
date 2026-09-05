@@ -4,9 +4,9 @@
  *
  * Modelled on connection_service.c: the subscription is a small record on
  * the subscriber's heap, registered as the event_service context.  Events
- * are posted by rcore/keyboard.c from the service worker thread as heap
- * copies; event_service's destroy callback frees a copy on the last thread
- * that sees it.
+ * are posted by rcore/keyboard.c from the service worker thread, packed
+ * into the event_service data word (see _pack), so nothing is allocated
+ * per key press.
  *
  * One subscriber at a time.  event_service_event_trigger() relays and
  * destroys an event once per matching subscriber, so a second subscriber on
@@ -31,15 +31,56 @@ typedef struct KeyboardSubscription {
 static KeyboardSubscription *_subscription;   /* NULL while nobody listens */
 static app_running_thread *_subscriber_thread; /* owner of _subscription */
 
+/* An event travels through event_service packed into the data word, so no
+ * heap copy is needed: a copy would leak whenever the app or overlay queue
+ * drops the message (overlay_window_post_event() posts with no timeout to
+ * a queue of depth 1 and ignores the result) or the subscriber goes away
+ * between post and delivery. */
+#define _PACK_TYPE_SHIFT      0   /* 2 bits */
+#define _PACK_USAGE_SHIFT     2   /* 8 bits */
+#define _PACK_MODIFIERS_SHIFT 10  /* 8 bits */
+#define _PACK_CHAR_SHIFT      18  /* 8 bits */
+#define _PACK_LINK_SHIFT      26  /* 2 bits */
+
+static void *_pack(const KeyboardEvent *event)
+{
+    uintptr_t w = ((uintptr_t)event->type & 3) << _PACK_TYPE_SHIFT
+                | ((uintptr_t)event->usage & 0xff) << _PACK_USAGE_SHIFT
+                | ((uintptr_t)event->modifiers & 0xff) << _PACK_MODIFIERS_SHIFT
+                | ((uintptr_t)(uint8_t)event->character & 0xff) << _PACK_CHAR_SHIFT
+                | ((uintptr_t)event->link_state & 3) << _PACK_LINK_SHIFT;
+    return (void *)w;
+}
+
+static void _unpack(void *data, KeyboardEvent *event)
+{
+    uintptr_t w = (uintptr_t)data;
+    event->type = (KeyboardEventType)((w >> _PACK_TYPE_SHIFT) & 3);
+    event->usage = (w >> _PACK_USAGE_SHIFT) & 0xff;
+    event->modifiers = (w >> _PACK_MODIFIERS_SHIFT) & 0xff;
+    event->character = (char)((w >> _PACK_CHAR_SHIFT) & 0xff);
+    event->link_state = (KeyboardLinkState)((w >> _PACK_LINK_SHIFT) & 3);
+}
+
+/* event_service_post() calls the destroy callback unconditionally when a
+ * queue is full, so it must exist even though there is nothing to free. */
+static void _destroy_nothing(void *data)
+{
+    (void)data;
+}
+
 static void _keyboard_service_cb(EventServiceCommand command, void *data, void *context)
 {
     KeyboardSubscription *sub = (KeyboardSubscription *)context;
+    KeyboardEvent event;
 
     /* A registration the owner left behind: never touch its record. */
     if (sub != _subscription)
         return;
-    if (sub->handler)
-        sub->handler((KeyboardEvent *)data, sub->context);
+    if (!sub->handler)
+        return;
+    _unpack(data, &event);
+    sub->handler(&event, sub->context);
 }
 
 void keyboard_service_subscribe(KeyboardHandler handler, void *context)
@@ -93,18 +134,7 @@ void keyboard_service_unsubscribe_thread(app_running_thread *thread)
 
 void keyboard_service_post(const KeyboardEvent *event)
 {
-    /* With no subscriber, event_service would never destroy the copy. */
     if (!_subscription)
         return;
-
-    KeyboardEvent *copy = malloc(sizeof(KeyboardEvent));
-    if (!copy) {
-        LOG_ERROR("no memory for keyboard event");
-        return;
-    }
-    *copy = *event;
-
-    /* remote_free also covers event_service_post's queue-full path, which
-     * calls the destroy callback on the posting thread. */
-    event_service_post(EventServiceCommandKeyboard, copy, remote_free);
+    event_service_post(EventServiceCommandKeyboard, _pack(event), _destroy_nothing);
 }
