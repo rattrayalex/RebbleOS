@@ -50,7 +50,8 @@ because the button thread applies its own repeat.
    the keys that went down and up.  Mapped keys call
    `button_inject_state()` (rcore/buttons.c), so debounce, long click,
    repeat and overlay/app ownership behave as for a physical button.
-   Every key also goes to `keyboard_service_post()`.
+   Every key press and release also goes to `keyboard_service_post()`; a
+   change of the modifier keys alone posts nothing.
 4. `rwatch/event/keyboard_service.c` delivers a `KeyboardEvent` (type
    KeyDown, KeyUp or LinkState; usage, modifiers, character, link_state)
    to the handler registered with `keyboard_service_subscribe()`.
@@ -93,11 +94,22 @@ The handler runs on the thread that subscribed.
    not in the app ABI table (rcore/api_func_symbols.h).
 2. No text entry widget exists yet; notification replies and the dictation
    API stay unimplemented.
-3. US layout only.  One bonded keyboard at a time.  Keyboards that require
-   a passkey do not pair.
+3. US layout only.  One bonded keyboard at a time.  Pairing is legacy
+   Just Works: keyboards that require a passkey or LE Secure Connections
+   only do not pair.
 4. Media keys, NKRO bitmap reports and mouse or touchpad reports are
-   ignored.  Bluetooth Classic keyboards are not supported.
-5. Not yet run on hardware.  The second link raises the SoftDevice RAM
+   ignored.  Bluetooth Classic keyboards are not supported.  The pairing
+   scan skips advertisers whose appearance is a non-keyboard HID subtype,
+   so a keyboard-and-touchpad combo that advertises as a mouse is never
+   picked.
+5. A keyboard that uses resolvable private addresses is reconnected
+   through its identity address only when it distributed an IRK and the
+   SoftDevice accepts the device identity list while the phone advertiser
+   is running; otherwise the last connection address is used, and the
+   reconnect stops working once that address rotates.
+6. `keyboard_service` has one subscriber at a time (see the comment at the
+   top of rwatch/event/keyboard_service.c).
+7. Not yet run on hardware.  The second link raises the SoftDevice RAM
    demand; a too-small reservation panics at boot
    (hw/drivers/nrf52_bluetooth/nrf52_bluetooth.c), and this path has not
    been exercised.
