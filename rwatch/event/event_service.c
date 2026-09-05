@@ -56,7 +56,9 @@ void event_service_unsubscribe_thread(EventServiceCommand command, app_running_t
     event_service_subscriber *conn;
     list_foreach(conn, &_subscriber_list_head, event_service_subscriber, node)
     {
-        if (conn->thread == thread)
+        /* Match the command too: a thread with several subscriptions must
+         * lose only the one being unsubscribed. */
+        if (conn->thread == thread && conn->command == command)
         {
             list_remove(&_subscriber_list_head, &conn->node);
             remote_free(conn);
@@ -68,14 +70,23 @@ void event_service_unsubscribe_thread(EventServiceCommand command, app_running_t
 void event_service_unsubscribe_thread_all(app_running_thread *thread)
 {
     event_service_subscriber *conn;
-    list_foreach(conn, &_subscriber_list_head, event_service_subscriber, node)
+    /* Restart the walk after each removal: the node being freed is the
+     * iterator.  A dying thread can hold more than one subscription. */
+    for (;;)
     {
-        if (conn->thread == thread)
+        event_service_subscriber *found = NULL;
+        list_foreach(conn, &_subscriber_list_head, event_service_subscriber, node)
         {
-            list_remove(&_subscriber_list_head, &conn->node);
-            remote_free(conn);
-            break;
+            if (conn->thread == thread)
+            {
+                found = conn;
+                break;
+            }
         }
+        if (!found)
+            return;
+        list_remove(&_subscriber_list_head, &found->node);
+        remote_free(found);
     }
 }
 
