@@ -110,6 +110,7 @@ static char _hid_name[KEYBOARD_NAME_MAX] = "";
 
 static uint8_t _hid_connect_is_pairing = 0;   /* the pending / current connection came from a pairing scan */
 static uint8_t _hid_pairing_requested = 0;    /* sd_ble_gap_authenticate() was called on this link */
+static uint8_t _hid_encrypt_started = 0;      /* sd_ble_gap_encrypt() was called on this link */
 static uint8_t _hid_encrypt_fallback_used = 0;/* a rejected stored key already fell back to pairing */
 static uint8_t _hid_encrypted = 0;            /* BLE_GAP_EVT_CONN_SEC_UPDATE reported level >= 2 */
 static uint8_t _hid_auth_done = 0;            /* BLE_GAP_EVT_AUTH_STATUS success arrived */
@@ -125,8 +126,9 @@ static uint32_t _hid_hvx_logged = 0;          /* HVX events logged at INFO so fa
  * (sd_ble_gap_encrypt, sd_ble_gap_device_identities_set), the master_id
  * inside ble_gap_enc_key_t needs 2-byte alignment, and GCC's
  * -Waddress-of-packed-member would flag every such pointer.  The record is
- * only ever read back by the firmware that wrote it; a size mismatch on
- * load is treated as "no bond". */
+ * only ever read back by the firmware that wrote it; a stored record
+ * shorter than this struct is treated as "no bond" (prefs_get truncates a
+ * longer one to the struct size). */
 struct hid_bond {
     uint8_t valid;
     ble_gap_addr_t addr;         /* address the keyboard connected with (may be a resolvable private address) */
@@ -137,7 +139,6 @@ struct hid_bond {
 };
 
 static struct hid_bond _bond;    /* working copy; written by the event handler, snapshotted by threads under a critical section */
-static uint8_t _bond_loaded = 0;
 
 /* Key storage the SoftDevice fills during pairing (sd_ble_gap_sec_params_reply). */
 static ble_gap_enc_key_t _keys_own_enc, _keys_peer_enc;
@@ -302,6 +303,8 @@ enum hid_retry {
 };
 
 static uint8_t _retry_what = RETRY_NONE;
+static uint8_t _retry_attempts = 0;   /* consecutive busy retries of the same step */
+#define HID_RETRY_MAX 20              /* about one second at HID_RETRY_MS */
 
 /***** Small helpers *****/
 
@@ -354,7 +357,14 @@ static void _set_state(enum hid_state st) {
  * thread, so every state report goes through the service thread. */
 static void _svc_link_state(void *ctx) {
     KeyboardLinkState st = (KeyboardLinkState)(intptr_t)ctx;
-    keyboard_link_state_changed(st, _hid_name[0] ? _hid_name : NULL);
+    char name[KEYBOARD_NAME_MAX];
+
+    /* _hid_name is written in event context; take a consistent copy. */
+    taskENTER_CRITICAL();
+    memcpy(name, _hid_name, sizeof(name));
+    taskEXIT_CRITICAL();
+    name[sizeof(name) - 1] = 0;
+    keyboard_link_state_changed(st, name[0] ? name : NULL);
 }
 
 static void _report_link_state(KeyboardLinkState st) {
@@ -406,32 +416,41 @@ static void _svc_retry(void *ctx) {
     if (!alive || what == RETRY_NONE)
         return;
 
-    HID_LOG(APP_LOG_LEVEL_INFO, "retrying step %d", what);
+    HID_LOG(APP_LOG_LEVEL_INFO, "retrying step %d (attempt %d)", what, _retry_attempts + 1);
     switch (what) {
     case RETRY_ENCRYPT:
         rv = sd_ble_gap_encrypt(_hid_conn, &_bond.peer_enc.master_id, &_bond.peer_enc.enc_info);
-        if (rv != NRF_SUCCESS)
-            _fail("sd_ble_gap_encrypt retry failed");
         break;
     case RETRY_AUTHENTICATE:
         rv = sd_ble_gap_authenticate(_hid_conn, &_hid_sec_params);
-        if (rv != NRF_SUCCESS)
-            _fail("sd_ble_gap_authenticate retry failed");
         break;
     case RETRY_SEC_PARAMS_REPLY:
         rv = sd_ble_gap_sec_params_reply(_hid_conn, BLE_GAP_SEC_STATUS_SUCCESS, NULL, &_hid_keyset);
-        if (rv != NRF_SUCCESS)
-            _fail("sd_ble_gap_sec_params_reply retry failed");
         break;
     case RETRY_DISCOVERY:
-        _disc_step();
-        break;
+        _disc_step();   /* re-defers itself while the SoftDevice stays busy; the watchdog bounds it */
+        return;
+    default:
+        return;
     }
+    if (rv == NRF_SUCCESS)
+        return;
+    /* Encryption and pairing take several connection intervals; keep trying
+     * for a while before giving up on the link. */
+    if (rv == NRF_ERROR_BUSY && ++_retry_attempts < HID_RETRY_MAX) {
+        _retry_what = what;
+        service_submit(_svc_retry, (void *)(intptr_t)_hid_link_gen, pdMS_TO_TICKS(HID_RETRY_MS));
+        return;
+    }
+    HID_LOG(APP_LOG_LEVEL_ERROR, "step %d failed (%d) after %d attempts", what, rv, _retry_attempts + 1);
+    _fail("security step failed");
 }
 
 /* Schedule a retry of a SoftDevice call that returned NRF_ERROR_BUSY (the
  * same trick nrf52_bluetooth.c uses for the remote-name read). */
 static void _defer_retry(enum hid_retry what) {
+    if (_retry_what != what)
+        _retry_attempts = 0;
     _retry_what = what;
     service_submit(_svc_retry, (void *)(intptr_t)_hid_link_gen, pdMS_TO_TICKS(HID_RETRY_MS));
 }
@@ -476,13 +495,11 @@ static void _svc_bond_load(void *ctx) {
         memcpy(&_bond, &b, sizeof(_bond));
         _bond.name[sizeof(_bond.name) - 1] = 0;
         strncpy(_hid_name, _bond.name, sizeof(_hid_name) - 1);
-        _bond_loaded = 1;
         taskEXIT_CRITICAL();
         HID_LOG(APP_LOG_LEVEL_INFO, "loaded bond for \"%s\" at %s (identity %s)", _bond.name,
                 _addr_str(&_bond.addr), _bond_id_usable() ? "yes" : "no");
         _reconnect_start();
     } else {
-        _bond_loaded = 1;
         HID_LOG(APP_LOG_LEVEL_INFO, "no stored keyboard bond (prefs_get returned %d)", n);
     }
 }
@@ -520,7 +537,12 @@ static void _ring_push(const uint8_t *data, uint16_t len) {
     _ring_count++;
     if (!_ring_drain_pending) {
         _ring_drain_pending = 1;
-        service_submit(_svc_drain_ring, NULL, 0);
+        /* A full service queue would otherwise leave the drain flag set for
+         * ever and no later report could schedule a drain. */
+        if (!service_submit(_svc_drain_ring, NULL, 0)) {
+            _ring_drain_pending = 0;
+            HID_LOG(APP_LOG_LEVEL_WARNING, "service queue full; report drain not scheduled");
+        }
     }
 }
 
@@ -548,7 +570,9 @@ static void _svc_drain_ring(void *ctx) {
 static void _link_reset(void) {
     _hid_conn = BLE_CONN_HANDLE_INVALID;
     _hid_pairing_requested = 0;
+    _hid_encrypt_started = 0;
     _hid_encrypt_fallback_used = 0;
+    _retry_attempts = 0;
     _hid_encrypted = 0;
     _hid_auth_done = 0;
     _hid_connect_is_pairing = 0;
@@ -578,16 +602,20 @@ static void _fail(const char *why) {
 
 /* Start a fresh pairing scan.  Returns 0 on success. */
 static int _scan_start(void) {
-    ret_code_t rv = sd_ble_gap_scan_start(&_scan_params_pair, &_scan_buf);
-    if (rv != NRF_SUCCESS) {
-        HID_LOG(APP_LOG_LEVEL_ERROR, "sd_ble_gap_scan_start failed (%d)", rv);
-        return -1;
-    }
     _cand_valid = 0;
     _cand_reports = 0;
     _scan_reports_seen = 0;
     _hid_name[0] = 0;
+    /* The state goes first: an ADV_REPORT can arrive (in event context)
+     * before sd_ble_gap_scan_start returns to a thread caller, and must not
+     * be dropped without continuing the scan. */
     _set_state(HID_SCANNING);
+    ret_code_t rv = sd_ble_gap_scan_start(&_scan_params_pair, &_scan_buf);
+    if (rv != NRF_SUCCESS) {
+        HID_LOG(APP_LOG_LEVEL_ERROR, "sd_ble_gap_scan_start failed (%d)", rv);
+        _set_state(HID_IDLE);
+        return -1;
+    }
     _report_link_state(KeyboardLinkScanning);
     return 0;
 }
@@ -605,6 +633,7 @@ static void _scan_continue(void) {
         HID_LOG(APP_LOG_LEVEL_ERROR, "sd_ble_gap_scan_start(continue) failed (%d)", rv);
         _set_state(HID_IDLE);
         _report_link_state(KeyboardLinkDisconnected);
+        _reconnect_start();
     }
 }
 
@@ -716,9 +745,16 @@ static void _on_adv_report(const ble_gap_evt_adv_report_t *r) {
 }
 
 static void _on_timeout(uint8_t src) {
+    /* A timeout of a scanner or initiator that was already replaced (for
+     * example a connect timeout queued behind a new pairing scan) must not
+     * reset the state of its successor. */
     if (src == BLE_GAP_TIMEOUT_SRC_SCAN) {
+        if (_hid_state != HID_SCANNING)
+            return;
         HID_LOG(APP_LOG_LEVEL_INFO, "pairing scan timed out after %d reports, no keyboard found", _scan_reports_seen);
     } else if (src == BLE_GAP_TIMEOUT_SRC_CONN) {
+        if (_hid_state != HID_CONNECTING)
+            return;
         HID_LOG(APP_LOG_LEVEL_INFO, "connect timed out (%s)", _hid_connect_is_pairing ? "pairing" : "reconnect");
     } else {
         HID_LOG(APP_LOG_LEVEL_INFO, "timeout source %d", src);
@@ -800,6 +836,7 @@ static void _start_authenticate(void) {
 static void _start_encrypt(void) {
     /* S140: sd_ble_gap_encrypt takes the master id and encryption info the
      * peripheral distributed when we bonded (keys_peer.p_enc_key). */
+    _hid_encrypt_started = 1;
     ret_code_t rv = sd_ble_gap_encrypt(_hid_conn, &_bond.peer_enc.master_id, &_bond.peer_enc.enc_info);
     HID_LOG(APP_LOG_LEVEL_INFO, "encrypting with the stored bond: sd_ble_gap_encrypt -> %d", rv);
     if (rv == NRF_SUCCESS)
@@ -908,8 +945,10 @@ static void _on_sec_request(const ble_gap_evt_sec_request_t *sr) {
     HID_LOG(APP_LOG_LEVEL_INFO, "security request: bond %d mitm %d lesc %d", sr->bond, sr->mitm, sr->lesc);
     if (_hid_encrypted)
         return;  /* already secure; the SoftDevice rejects a second procedure anyway */
-    if (_hid_pairing_requested)
-        return;  /* our pairing is in flight; the request is satisfied by it */
+    if (_hid_pairing_requested || _hid_encrypt_started)
+        return;  /* our own pairing or encryption is in flight (keyboards often
+                  * send this right after connecting); a second procedure would
+                  * only get NRF_ERROR_BUSY */
     if (_peer_matches_bond(&_hid_peer_addr))
         _start_encrypt();
     else
@@ -1286,12 +1325,13 @@ static void _on_connected(const ble_gap_evt_t *gap) {
         (void) sd_ble_gap_disconnect(gap->conn_handle, BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
         return;
     }
-    if (_hid_state == HID_SCANNING) {
-        /* A background reconnect completed just as hw_keyboard_pair_start()
-         * cancelled it; the user wants a new keyboard, so drop this link
-         * and keep scanning.  This also happens if the bonded keyboard
-         * itself wakes up mid-scan. */
-        HID_LOG(APP_LOG_LEVEL_INFO, "connection from %s during a pairing scan; dropping it", _addr_str(&c->peer_addr));
+    if (_hid_state != HID_CONNECTING) {
+        /* Only our initiator creates central links.  One that completes
+         * after hw_keyboard_pair_start() or hw_keyboard_forget() cancelled
+         * it (the cancel raced the connection) is not wanted: drop it, and
+         * leave the scanner or the idle state alone.  Its DISCONNECTED
+         * event is ignored because the handle is never adopted. */
+        HID_LOG(APP_LOG_LEVEL_INFO, "connection from %s in state %s; dropping it", _addr_str(&c->peer_addr), _state_names[_hid_state]);
         (void) sd_ble_gap_disconnect(gap->conn_handle, BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
         return;
     }
@@ -1316,7 +1356,10 @@ static void _on_connected(const ble_gap_evt_t *gap) {
         _report_link_state(KeyboardLinkConnecting);
     service_submit(_svc_watchdog, (void *)(intptr_t)_hid_link_gen, pdMS_TO_TICKS(HID_WATCHDOG_MS));
 
-    if (bonded)
+    /* A connection made by "Pair new keyboard" always pairs afresh, even to
+     * the bonded address: a keyboard that lost its side of the bond drops
+     * the link on an encryption request instead of rejecting the key. */
+    if (bonded && !pairing)
         _start_encrypt();
     else
         _start_authenticate();
@@ -1325,6 +1368,11 @@ static void _on_connected(const ble_gap_evt_t *gap) {
 static void _on_disconnected(const ble_gap_evt_t *gap) {
     HID_LOG(APP_LOG_LEVEL_INFO, "disconnected, HCI reason 0x%02x (state %s)", gap->params.disconnected.reason,
             _state_names[_hid_state]);
+    /* A link that never became ready (the keyboard dropped it during
+     * pairing or discovery) is retried with the failure backoff, not at
+     * once, so a keyboard that keeps refusing does not cause a tight loop. */
+    if (_hid_state == HID_PAIRING || _hid_state == HID_DISCOVERING || _hid_state == HID_SUBSCRIBING)
+        _hid_reconnect_backoff = 1;
     _link_reset();
     _hid_link_gen++;   /* orphan the watchdog and any pending retry */
     _set_state(HID_IDLE);
@@ -1507,20 +1555,25 @@ int hw_keyboard_pair_start(void) {
         _hid_forgetting = 0;
         _hid_reconnect_backoff = 0;
         _hid_pair_after_disconnect = (conn != BLE_CONN_HANDLE_INVALID);
+        /* Leave CONNECTING inside the critical section: a connection that
+         * completes from here on finds the state IDLE and is dropped by
+         * _on_connected() instead of being adopted under our feet. */
+        if (st == HID_CONNECTING)
+            _hid_state = HID_IDLE;
     }
     taskEXIT_CRITICAL();
     if (st == HID_SCANNING) {
         HID_LOG(APP_LOG_LEVEL_INFO, "pair_start: a pairing scan is already running");
         return -1;
     }
+    if (st == HID_CONNECTING)
+        HID_LOG(APP_LOG_LEVEL_INFO, "state %s -> %s", _state_names[HID_CONNECTING], _state_names[HID_IDLE]);
 
     /* S140: sd_ble_gap_connect_cancel ends a pending initiator and
      * sd_ble_gap_scan_stop a scanner; both return NRF_ERROR_INVALID_STATE
      * when there is nothing to stop, and neither generates an event. */
     (void) sd_ble_gap_connect_cancel();
     (void) sd_ble_gap_scan_stop();
-    if (st == HID_CONNECTING)
-        _set_state(HID_IDLE);
 
     if (conn != BLE_CONN_HANDLE_INVALID) {
         /* One central link only: drop the current keyboard, and scan once
@@ -1580,12 +1633,16 @@ int hw_keyboard_forget(void) {
     _hid_forgetting = (conn != BLE_CONN_HANDLE_INVALID);
     _hid_pair_after_disconnect = 0;
     _hid_reconnect_backoff = 0;
+    /* As in hw_keyboard_pair_start(): a connection completing from here on
+     * is dropped by _on_connected() rather than paired with again. */
+    if (st == HID_CONNECTING || st == HID_SCANNING)
+        _hid_state = HID_IDLE;
     taskEXIT_CRITICAL();
+    if (st == HID_CONNECTING || st == HID_SCANNING)
+        HID_LOG(APP_LOG_LEVEL_INFO, "state %s -> %s", _state_names[st], _state_names[HID_IDLE]);
 
     (void) sd_ble_gap_connect_cancel();
     (void) sd_ble_gap_scan_stop();
-    if (st == HID_CONNECTING || st == HID_SCANNING)
-        _set_state(HID_IDLE);
     /* Drop the identity list entry; fails harmlessly if a role holds it. */
     (void) sd_ble_gap_device_identities_set(NULL, NULL, 0);
 
