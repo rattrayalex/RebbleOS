@@ -36,7 +36,7 @@ void service_init() {
 
 static struct service_packet *pktq = NULL;
 
-void service_submit(service_callback_t cbk, void *ctx, uint32_t when) {
+int service_submit(service_callback_t cbk, void *ctx, uint32_t when) {
     struct service_packet pkt;
     pkt.cbk = cbk;
     pkt.ctx = ctx;
@@ -44,8 +44,9 @@ void service_submit(service_callback_t cbk, void *ctx, uint32_t when) {
     
     BaseType_t woken = pdFALSE;
     
-    xQueueSendFromISR(QUEUE_HANDLE(service), &pkt, &woken);
+    BaseType_t queued = xQueueSendFromISR(QUEUE_HANDLE(service), &pkt, &woken);
     portYIELD_FROM_ISR(woken);
+    return queued == pdTRUE;
 }
 
 static void _service_thread(void *params) {
