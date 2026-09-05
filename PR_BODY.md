@@ -2,6 +2,8 @@ Bluetooth keyboard support: BLE HID (HOGP) host on the nRF52840 targets (#165)
 
 Closes #165.
 
+**A note on the repository.** I filed #165 here thinking RebbleOS was the firmware my Pebble Round 2 ships with. It is not: the Round 2 runs Core Devices' PebbleOS, and the matching request now lives at https://github.com/coredevices/PebbleOS/issues/1996. This PR still stands on its own for the nRF52840 boards RebbleOS supports; the design (button injection, keyboard module, boot-protocol host) is what the PebbleOS port will follow.
+
 ## What this adds
 
 A Bluetooth LE keyboard can be paired with the watch on the nRF52840 targets (`asterix`, `asterix_vla_dvb1`, `asterix_vla_dvb2`). The watch acts as the BLE central and HID-over-GATT host: it scans, connects, bonds (Just Works), discovers the HID service, subscribes to the keyboard's input report, and turns key presses into button presses, so every existing app works unchanged.
@@ -43,7 +45,7 @@ A Bluetooth LE keyboard can be paired with the watch on the nRF52840 targets (`a
 
 ## A note on the Pebble Round 2
 
-Issue #165 mentions the Pebble Round 2. That watch uses a SiFli SF32LB52 and ships with Core Devices' PebbleOS (NimBLE), which RebbleOS does not target, so this change only reaches the nRF52840 boards RebbleOS already supports. The design (button injection, the keyboard module, a boot-protocol host) would carry over to PebbleOS; the SoftDevice calls would not.
+The Round 2 uses a SiFli SF32LB52 and ships with Core Devices' PebbleOS (NimBLE), which RebbleOS does not target, so this change only reaches the nRF52840 boards RebbleOS already supports. The PebbleOS side is tracked at https://github.com/coredevices/PebbleOS/issues/1996; the design carries over, the SoftDevice calls do not.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
